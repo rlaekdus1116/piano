@@ -140,9 +140,9 @@
 <main>
   <!-- LIVE -->
   <section class="view active" id="view-live">
-    <div class="chord-big" id="liveName">♪</div>
-    <div class="chord-sub" id="liveSub">CP88을 연결하고 코드를 눌러보세요. 화면 건반을 손가락으로 눌러도 돼요!</div>
-    <div id="liveHands" style="margin-top:6px"></div>
+    <div class="chord-big" id="liveName" style="min-height:60px">♪</div>
+    <div class="chord-sub" id="liveSub" style="min-height:22px">CP88을 연결하고 코드를 눌러보세요. 화면 건반을 손가락으로 눌러도 돼요!</div>
+    <div id="liveHands" style="margin-top:6px;min-height:40px"></div>
     <div class="kb-wrap"><div id="kbLive"></div></div>
     <div class="label-now" id="liveNotes"></div>
     <div class="help">💡 태블릿: 화면 건반을 직접 터치해도 소리가 나요. CP88은 USB로 연결한 뒤 <b>CP88 연결</b>을 누르면 돼요(크롬/엣지/사파리).</div>
@@ -193,6 +193,7 @@
       <button class="btn ghost" id="accStop">■ 정지</button>
     </div>
     <div class="help" id="accDesc"></div>
+    <div class="card" style="overflow-x:auto"><div class="diagram-label">🎼 반주 악보 — 파랑●=오른손 / 주황●=왼손, 가로는 박자</div><div id="accStaff"></div></div>
     <div id="accSheet" class="sheet"></div>
     <div class="feedback" id="accFb" style="min-height:28px"></div>
     <div class="kb-wrap"><div id="kbAcc"></div></div>
@@ -372,22 +373,15 @@ function afterInput(cmd){
   else if(currentView==='accomp'){ refreshAcc(notes); if(cmd===0x90) accOnset(); }
 }
 function allNotesOff(){ Object.keys(liveVoices).forEach(m=>noteOff(+m)); activeNotes.clear(); }
+/* 화면 건반은 '토글' 방식: 누르면 켜지고, 같은 건반을 다시 누르면 꺼져요(터치 안정성↑).
+   진짜 CP88(MIDI)은 그대로 누르는 동안만 소리 납니다. */
+function toggleNote(m){ if(activeNotes.has(m)) inputOff(m); else inputOn(m,.8); }
 function enableInput(id){
   const el=document.getElementById(id); if(!el||el._wired)return; el._wired=true; el.style.touchAction='none';
-  // 마우스(데스크톱)
-  let mDown=false, mNote=null;
-  el.addEventListener('mousedown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault();
-    mDown=true; mNote=+k.dataset.m; inputOn(mNote,.8); });
-  window.addEventListener('mouseup',()=>{ if(mDown){ mDown=false; if(mNote!=null){inputOff(mNote);mNote=null;} } });
-  // 터치(태블릿) — 멀티터치로 코드 짚기 지원
-  const tmap=new Map(); // touch.identifier -> midi
+  el.addEventListener('mousedown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault(); toggleNote(+k.dataset.m); });
   el.addEventListener('touchstart',e=>{ e.preventDefault();
     for(const t of e.changedTouches){ const tgt=document.elementFromPoint(t.clientX,t.clientY);
-      const k=tgt&&tgt.closest&&tgt.closest('[data-m]'); if(!k)continue;
-      const m=+k.dataset.m; if(tmap.has(t.identifier))continue; tmap.set(t.identifier,m); inputOn(m,.8); } },{passive:false});
-  const tend=e=>{ for(const t of e.changedTouches){ if(tmap.has(t.identifier)){ inputOff(tmap.get(t.identifier)); tmap.delete(t.identifier); } } };
-  el.addEventListener('touchend',e=>{ e.preventDefault(); tend(e); },{passive:false});
-  el.addEventListener('touchcancel',tend,{passive:false});
+      const k=tgt&&tgt.closest&&tgt.closest('[data-m]'); if(!k)continue; toggleNote(+k.dataset.m); } },{passive:false});
 }
 
 /* ============ Web MIDI ============ */
@@ -476,7 +470,7 @@ function checkGuided(notes){
     setTimeout(()=>nextGuided(1),1300); }
   else { fb.textContent="🙈 아직이에요~ 파란 건반을 눌러보세요"; fb.className="feedback no"; }
 }
-function nextGuided(dir){ const n=GUIDED_SETS[gKey].list.length; gIdx=(gIdx+dir+n)%n; gSolved=false;
+function nextGuided(dir){ allNotesOff(); const n=GUIDED_SETS[gKey].list.length; gIdx=(gIdx+dir+n)%n; gSolved=false;
   document.getElementById('gFb').textContent="🎀 이 코드를 눌러보세요!"; document.getElementById('gFb').className="feedback";
   renderGuided([...activeNotes]); }
 
@@ -566,8 +560,37 @@ function buildAccUI(){ const ps=document.getElementById('accProg');
   resolveProg();
   ps.value=accState.progIdx; pa.value=accState.patIdx;
   document.getElementById('accBpm').value=accState.bpm; document.getElementById('bpmLabel').textContent=accState.bpm;
-  document.getElementById('accDesc').innerHTML=accState.pattern.desc; renderSheet();
+  document.getElementById('accDesc').innerHTML=accState.pattern.desc; renderSheet(); renderAccNotation();
   buildKeyboard('kbAcc',48,88); highlightKeys('kbAcc',[]); }
+const DIA_MAP={0:[0,''],1:[0,'♯'],2:[1,''],3:[2,'♭'],4:[2,''],5:[3,''],6:[3,'♯'],7:[4,''],8:[5,'♭'],9:[5,''],10:[6,'♭'],11:[6,'']};
+function renderAccNotation(){
+  const cont=document.getElementById('accStaff'); if(!cont)return; resolveProg();
+  const prog=accState.progResolved, pat=accState.pattern, mW=176, lx=52, n=prog.length, W=lx+n*mW+10, H=192;
+  const tB=72, bB=160, gap=9, half=4.5;
+  function di(m){ const pc=((m%12)+12)%12, oct=Math.floor(m/12)-1, d=DIA_MAP[pc]; return {dia:oct*7+d[0],acc:d[1]}; }
+  function yPos(m){ const o=di(m); return m>=60?{y:tB-(o.dia-30)*half,acc:o.acc,t:1}:{y:bB-(o.dia-18)*half,acc:o.acc,t:0}; }
+  let s=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+  for(let i=0;i<5;i++){ const y=tB-i*gap; s+=`<line x1="${lx}" y1="${y}" x2="${W-6}" y2="${y}" stroke="#e7b8d2" stroke-width="1"/>`; }
+  for(let i=0;i<5;i++){ const y=bB-i*gap; s+=`<line x1="${lx}" y1="${y}" x2="${W-6}" y2="${y}" stroke="#bcd6f0" stroke-width="1"/>`; }
+  s+=`<text x="6" y="${tB-15}" font-size="12" fill="#3d8fd6" font-weight="700">오른손</text>`;
+  s+=`<text x="6" y="${bB-15}" font-size="12" fill="#e06a3e" font-weight="700">왼손</text>`;
+  prog.forEach((ch,mi)=>{ const x0=lx+mi*mW;
+    s+=`<line x1="${x0}" y1="${tB-4*gap}" x2="${x0}" y2="${bB}" stroke="#cbb0c2" stroke-width="1.5"/>`;
+    s+=`<text x="${x0+mW/2}" y="14" text-anchor="middle" font-size="16" font-weight="800" fill="#ff6fae">${ch.label}</text>`;
+    for(let bt=0;bt<4;bt++){ const bx=x0+16+(bt/4)*(mW-26);
+      s+=`<line x1="${bx}" y1="${tB-4*gap}" x2="${bx}" y2="${tB}" stroke="#f3dceb" stroke-width="1"/>`;
+      s+=`<line x1="${bx}" y1="${bB-4*gap}" x2="${bx}" y2="${bB}" stroke="#e3eefb" stroke-width="1"/>`;
+      s+=`<text x="${bx}" y="${H-4}" text-anchor="middle" font-size="9" fill="#c99bb7">${bt+1}</text>`; }
+    const bass=(ch.bass!=null?48+ch.bass:48+ch.root), rh=chordToMidi(ch.root,ch.iv,60).slice(0,4);
+    pat.gen(bass,rh,ch.root,ch.iv).forEach(ev=>{ const bx=x0+16+(ev.b/4)*(mW-26);
+      ev.notes.forEach(nn=>{ const p=yPos(nn), col=p.t?'#5b9be0':'#e8814f';
+        s+=`<ellipse cx="${bx}" cy="${p.y}" rx="5.4" ry="4.1" fill="${col}" stroke="#7a5066" stroke-width="0.6"/>`;
+        if(p.acc) s+=`<text x="${bx-10}" y="${p.y+4}" font-size="11" fill="#7a5066">${p.acc}</text>`; }); });
+  });
+  s+=`<line x1="${W-6}" y1="${tB-4*gap}" x2="${W-6}" y2="${tB}" stroke="#cbb0c2" stroke-width="2"/>`;
+  s+=`<line x1="${W-6}" y1="${bB-4*gap}" x2="${W-6}" y2="${bB}" stroke="#cbb0c2" stroke-width="2"/>`;
+  s+=`</svg>`; cont.innerHTML=s;
+}
 function renderSheet(jm){ const sheet=document.getElementById('accSheet'); sheet.innerHTML='';
   accState.progResolved.forEach((ch,i)=>{ const d=document.createElement('div'); d.className='measure'; d.id='meas-'+i;
     const j=jm&&jm[i]; let jt='';
