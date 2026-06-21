@@ -57,7 +57,8 @@
   .view.active{display:block}
 
   .kb-wrap{overflow-x:auto;padding:10px 0;-webkit-overflow-scrolling:touch}
-  svg.kb{display:block}
+  svg.kb{display:block;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  svg.kb rect{touch-action:none}
   .label-now{font-size:15px;color:var(--ink2);min-height:24px;margin:6px 0 4px}
 
   .chord-big{font-size:54px;color:var(--pink);margin:6px 0;text-shadow:2px 2px 0 #fff,3px 3px 0 #ffd0e6}
@@ -365,28 +366,31 @@ function staticKB(id,start,end,colorMap,fingerMap){
 
 /* ============ 입력 통합 (MIDI + 터치/마우스) ============ */
 let activeNotes=new Set(), currentView='live';
-function inputOn(m,vel=.8){ activeNotes.add(m); noteOn(m,vel); afterInput(0x90); }
-function inputOff(m){ activeNotes.delete(m); noteOff(m); afterInput(0x80); }
-function afterInput(cmd){
-  const notes=[...activeNotes];
+function addNote(m,vel){ if(activeNotes.has(m))return false; activeNotes.add(m); noteOn(m,vel); return true; }
+function removeNote(m){ if(!activeNotes.has(m))return false; activeNotes.delete(m); noteOff(m); return true; }
+function refreshView(on){ const notes=[...activeNotes];
   if(currentView==='live') refreshLive(notes);
   else if(currentView==='guided') checkGuided(notes);
-  else if(currentView==='accomp'){ refreshAcc(notes); if(cmd===0x90) accOnset(); }
-}
+  else if(currentView==='accomp'){ refreshAcc(notes); if(on) accOnset(); } }
+function inputOn(m,vel=.8){ if(addNote(m,vel)) refreshView(true); }   // MIDI 단일 음
+function inputOff(m){ if(removeNote(m)) refreshView(false); }
 function allNotesOff(){ Object.keys(liveVoices).forEach(m=>noteOff(+m)); activeNotes.clear(); }
-/* 화면 건반: 손가락으로 누르는 동안 소리(멀티터치 코드 OK). 떼면 꺼집니다.
-   잘못 눌렀으면 손가락을 떼면 바로 취소돼요. 안 꺼지면 헤더의 '🔇 음 끄기'. */
+/* 화면 건반: 누르는 동안 소리(멀티터치 코드 OK). 떼면 꺼짐. 여러 손가락을 한 번에 처리해 빠르게 반응. */
+function keyFromTouch(t){ let k=t.target&&t.target.closest&&t.target.closest('[data-m]'); if(k)return k;
+  const x=document.elementFromPoint(t.clientX,t.clientY); return x&&x.closest?x.closest('[data-m]'):null; }
 function enableInput(id){
   const el=document.getElementById(id); if(!el||el._wired)return; el._wired=true; el.style.touchAction='none';
   let mouseNote=null;
-  el.addEventListener('mousedown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault(); mouseNote=+k.dataset.m; inputOn(mouseNote,.8); });
-  window.addEventListener('mouseup',()=>{ if(mouseNote!=null){ inputOff(mouseNote); mouseNote=null; } });
+  el.addEventListener('mousedown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault(); mouseNote=+k.dataset.m; if(addNote(mouseNote,.8))refreshView(true); });
+  window.addEventListener('mouseup',()=>{ if(mouseNote!=null){ if(removeNote(mouseNote))refreshView(false); mouseNote=null; } });
   const tmap=new Map();
-  el.addEventListener('touchstart',e=>{ e.preventDefault();
-    for(const t of e.changedTouches){ const tgt=document.elementFromPoint(t.clientX,t.clientY);
-      const k=tgt&&tgt.closest&&tgt.closest('[data-m]'); if(!k)continue; if(tmap.has(t.identifier))continue;
-      const mm=+k.dataset.m; tmap.set(t.identifier,mm); inputOn(mm,.8); } },{passive:false});
-  const endT=e=>{ if(e.cancelable)e.preventDefault(); for(const t of e.changedTouches){ if(tmap.has(t.identifier)){ inputOff(tmap.get(t.identifier)); tmap.delete(t.identifier); } } };
+  el.addEventListener('touchstart',e=>{ e.preventDefault(); let ch=false;
+    for(const t of e.changedTouches){ if(tmap.has(t.identifier))continue; const k=keyFromTouch(t); if(!k)continue;
+      const mm=+k.dataset.m; tmap.set(t.identifier,mm); if(addNote(mm,.8))ch=true; }
+    if(ch) refreshView(true); },{passive:false});
+  const endT=e=>{ if(e.cancelable)e.preventDefault(); let ch=false;
+    for(const t of e.changedTouches){ if(tmap.has(t.identifier)){ if(removeNote(tmap.get(t.identifier)))ch=true; tmap.delete(t.identifier); } }
+    if(ch) refreshView(false); };
   el.addEventListener('touchend',endT,{passive:false});
   el.addEventListener('touchcancel',endT,{passive:false});
 }
@@ -475,7 +479,7 @@ function checkGuided(notes){
   const correct=want.size===played.size&&[...want].every(x=>played.has(x));
   if(correct){ gSolved=true; fb.textContent="🎉 참 잘했어요! 딩동댕~"; fb.className="feedback ok"; playChordNow(chordToMidi(c.root,c.iv,60),.9,.7);
     setTimeout(()=>nextGuided(1),1300); }
-  else { fb.textContent="🙈 아직이에요~ 파란 건반을 눌러보세요"; fb.className="feedback no"; }
+  else { fb.textContent= gShow?"🙈 아직이에요~ 파란 건반을 눌러보세요":"🙈 아직이에요~ 다시 시도! (👀 건반 보기로 힌트)"; fb.className="feedback no"; }
 }
 function nextGuided(dir){ allNotesOff(); const n=GUIDED_SETS[gKey].list.length; gIdx=(gIdx+dir+n)%n; gSolved=false;
   document.getElementById('gFb').textContent="🎀 이 코드를 눌러보세요!"; document.getElementById('gFb').className="feedback";
