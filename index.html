@@ -371,13 +371,23 @@ function afterInput(cmd){
   else if(currentView==='guided') checkGuided(notes);
   else if(currentView==='accomp'){ refreshAcc(notes); if(cmd===0x90) accOnset(); }
 }
+function allNotesOff(){ Object.keys(liveVoices).forEach(m=>noteOff(+m)); activeNotes.clear(); }
 function enableInput(id){
   const el=document.getElementById(id); if(!el||el._wired)return; el._wired=true; el.style.touchAction='none';
-  const ptr=new Map();
-  el.addEventListener('pointerdown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault();
-    const m=+k.dataset.m; ptr.set(e.pointerId,m); inputOn(m,.8); });
-  const up=e=>{ if(ptr.has(e.pointerId)){ const m=ptr.get(e.pointerId); ptr.delete(e.pointerId); inputOff(m); } };
-  el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up); window.addEventListener('pointerup',up);
+  // 마우스(데스크톱)
+  let mDown=false, mNote=null;
+  el.addEventListener('mousedown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault();
+    mDown=true; mNote=+k.dataset.m; inputOn(mNote,.8); });
+  window.addEventListener('mouseup',()=>{ if(mDown){ mDown=false; if(mNote!=null){inputOff(mNote);mNote=null;} } });
+  // 터치(태블릿) — 멀티터치로 코드 짚기 지원
+  const tmap=new Map(); // touch.identifier -> midi
+  el.addEventListener('touchstart',e=>{ e.preventDefault();
+    for(const t of e.changedTouches){ const tgt=document.elementFromPoint(t.clientX,t.clientY);
+      const k=tgt&&tgt.closest&&tgt.closest('[data-m]'); if(!k)continue;
+      const m=+k.dataset.m; if(tmap.has(t.identifier))continue; tmap.set(t.identifier,m); inputOn(m,.8); } },{passive:false});
+  const tend=e=>{ for(const t of e.changedTouches){ if(tmap.has(t.identifier)){ inputOff(tmap.get(t.identifier)); tmap.delete(t.identifier); } } };
+  el.addEventListener('touchend',e=>{ e.preventDefault(); tend(e); },{passive:false});
+  el.addEventListener('touchcancel',tend,{passive:false});
 }
 
 /* ============ Web MIDI ============ */
@@ -498,16 +508,16 @@ function renderDict(){
 
 /* ============ ACCOMPANIMENT ============ */
 const PROGRESSIONS=[
-  {name:"🎤 Thinking Out Loud — D·G·A (Ed Sheeran)",chords:[["D",""],["G",""],["A",""],["D",""]]},
-  {name:"🎤 Photograph — E·C#m·B·A (Ed Sheeran)",chords:[["E",""],["C#","m"],["B",""],["A",""]]},
-  {name:"🎤 Supermarket Flowers — A·E·F#m·D (Ed Sheeran)",chords:[["A",""],["E",""],["F#","m"],["D",""]]},
-  {name:"🎤 Perfect — G·Em·C·D (Ed Sheeran)",chords:[["G",""],["E","m"],["C",""],["D",""]]},
-  {name:"🎤 Castle on the Hill — D·A·Bm·G (Ed Sheeran)",chords:[["D",""],["A",""],["B","m"],["G",""]]},
-  {name:"C–G–Am–F (수많은 팝송)",chords:[["C",""],["G",""],["A","m"],["F",""]]},
-  {name:"Am–F–C–G",chords:[["A","m"],["F",""],["C",""],["G",""]]},
-  {name:"C–Am–F–G (올드팝)",chords:[["C",""],["A","m"],["F",""],["G",""]]},
-  {name:"Cmaj7–Am7–Dm7–G7 (재즈팝)",chords:[["C","maj7"],["A","m7"],["D","m7"],["G","7"]]},
-  {name:"Am–Dm–G–C (마이너 팝)",chords:[["A","m"],["D","m"],["G",""],["C",""]]},
+  {name:"🎤 Thinking Out Loud (Ed Sheeran)",bpm:79,pat:"ballad",chords:[["D",""],["D","","F#"],["G",""],["A",""]]},
+  {name:"🎤 Photograph (Ed Sheeran)",bpm:80,pat:"arp",chords:[["E",""],["C#","m"],["B",""],["A",""]]},
+  {name:"🎤 Supermarket Flowers (Ed Sheeran)",bpm:72,pat:"ballad",chords:[["A",""],["E",""],["F#","m"],["D",""]]},
+  {name:"🎤 Perfect (Ed Sheeran)",bpm:64,pat:"roll",chords:[["G",""],["E","m"],["C",""],["D",""]]},
+  {name:"🎤 Castle on the Hill (Ed Sheeran)",bpm:84,pat:"pop8",chords:[["D",""],["A",""],["B","m"],["G",""]]},
+  {name:"C–G–Am–F (수많은 팝송)",bpm:80,pat:"block",chords:[["C",""],["G",""],["A","m"],["F",""]]},
+  {name:"Am–F–C–G",bpm:80,pat:"block",chords:[["A","m"],["F",""],["C",""],["G",""]]},
+  {name:"C–Am–F–G (올드팝)",bpm:80,pat:"block",chords:[["C",""],["A","m"],["F",""],["G",""]]},
+  {name:"Cmaj7–Am7–Dm7–G7 (재즈팝)",bpm:84,pat:"arp",chords:[["C","maj7"],["A","m7"],["D","m7"],["G","7"]]},
+  {name:"Am–Dm–G–C (마이너 팝)",bpm:80,pat:"ballad",chords:[["A","m"],["D","m"],["G",""],["C",""]]},
 ];
 const PATTERNS=[
   {id:"block",name:"블록 코드 (기본)",desc:"<b>왼손</b>은 근음 하나, <b>오른손</b>은 코드 전체를 박자마다 '쿵·쿵·쿵·쿵' 함께. 가장 기본 — 동요·찬송가.",
@@ -518,17 +528,45 @@ const PATTERNS=[
    gen:(b,rh)=>{const a=[rh[0],rh[1],rh[2]??rh[1]];const seq=[b,a[0],a[1],a[2],a[1],a[0],a[1],a[2]];return seq.map((n,i)=>({b:i*.5,notes:[n],dur:.5}));}},
   {id:"alberti",name:"알베르티 베이스 (클래식)",desc:"<b>왼손</b>이 낮은음–높은음–가운데음을 굴리고(작은별 왼손), <b>오른손</b>은 코드를 받침.",
    gen:(b,rh,root,iv)=>{const lo=48+root,mid=48+root+iv[1],hi=48+root+iv[2];const seq=[lo,hi,mid,hi,lo,hi,mid,hi];const e=seq.map((n,i)=>({b:i*.5,notes:[n],dur:.5}));e.push({b:0,notes:rh,dur:3.8});return e;}},
+  {id:"pop8",name:"팝 8비트 (신나는 곡)",desc:"<b>왼손</b> 근음이 박마다 '쿵', <b>오른손</b> 코드가 엇박('and')에 '챡'. 통통 튀는 팝·신나는 곡.",
+   gen:(b,rh)=>{const e=[];[0,1,2,3].forEach(x=>e.push({b:x,notes:[b],dur:.45}));[0.5,1.5,2.5,3.5].forEach(x=>e.push({b:x,notes:rh,dur:.45}));return e;}},
+  {id:"roll",name:"느린 롤 (슬로우 발라드)",desc:"<b>왼손</b> 근음을 길게 깔고, <b>오른손</b> 코드음을 한 박씩 천천히 쌓아 올림. 아주 느린 발라드(Perfect 느낌).",
+   gen:(b,rh)=>{const a=[rh[0],rh[1],rh[2]??rh[1]];return [{b:0,notes:[b],dur:3.8},{b:1,notes:[a[0]],dur:3},{b:2,notes:[a[1]],dur:2},{b:3,notes:[a[2]],dur:1}];}},
+  {id:"march",name:"행진·락 (베이스+스탭)",desc:"<b>왼손</b> 근음 옥타브가 박마다 '둥둥둥둥', <b>오른손</b> 코드를 1·3박에 강하게. 힘찬 곡.",
+   gen:(b,rh)=>{const e=[];[0,1,2,3].forEach(x=>e.push({b:x,notes:[b,b+12],dur:.4}));e.push({b:0,notes:rh,dur:.9});e.push({b:2,notes:rh,dur:.9});return e;}},
 ];
 let accState={bpm:80,progIdx:0,patIdx:0,progResolved:[],pattern:null,run:null,ticker:null,scored:{},stats:null};
 let accPend=null;
 function accHandColor(notes,bass){ const m={}; notes.forEach(n=>m[n]= n<=bass?'#ff9e7a':'#7cc4ff'); return m; }
+function schedTone(m,dur,vel,atAbs){ if(!soundOn)return; initAudio(); const f=mtof(m);
+  const g=audioCtx.createGain(), lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=3200;
+  const o1=audioCtx.createOscillator(); o1.type='triangle'; o1.frequency.value=f;
+  const o2=audioCtx.createOscillator(); o2.type='sine'; o2.frequency.value=f*2;
+  const g2=audioCtx.createGain(); g2.gain.value=0.16;
+  o1.connect(g); o2.connect(g2); g2.connect(g); g.connect(lp); lp.connect(masterGain);
+  const v=Math.max(.08,Math.min(1,vel))*0.4;
+  g.gain.setValueAtTime(0,atAbs); g.gain.linearRampToValueAtTime(v,atAbs+.008); g.gain.exponentialRampToValueAtTime(.0001,atAbs+dur);
+  o1.start(atAbs); o2.start(atAbs); o1.stop(atAbs+dur+.05); o2.stop(atAbs+dur+.05);
+  accState.sched.push(o1,o2); }
+function schedClick(atAbs,accent){ if(!soundOn)return; initAudio();
+  const o=audioCtx.createOscillator(), g=audioCtx.createGain(); o.type='square'; o.frequency.value=accent?1600:1100;
+  o.connect(g); g.connect(masterGain);
+  g.gain.setValueAtTime(.0001,atAbs); g.gain.exponentialRampToValueAtTime(accent?.3:.16,atAbs+.001); g.gain.exponentialRampToValueAtTime(.0001,atAbs+.05);
+  o.start(atAbs); o.stop(atAbs+.06); accState.sched.push(o); }
 function resolveProg(){ const p=PROGRESSIONS[accState.progIdx];
-  accState.progResolved=p.chords.map(([L,sym])=>({root:LETTER_PC[L],sym,iv:ivOf(sym),label:L+sym}));
+  accState.progResolved=p.chords.map(c=>{ const sym=c[1]||"", bass=(c[2]!=null?LETTER_PC[c[2]]:null);
+    return {root:LETTER_PC[c[0]],sym,iv:ivOf(sym),bass,label:c[0]+sym+(c[2]?("/"+c[2]):"")}; });
   accState.pattern=PATTERNS[accState.patIdx]; }
+function applyProgRec(){ const p=PROGRESSIONS[accState.progIdx];
+  if(p.pat){ const i=PATTERNS.findIndex(x=>x.id===p.pat); if(i>=0) accState.patIdx=i; }
+  if(p.bpm) accState.bpm=p.bpm; }
 function buildAccUI(){ const ps=document.getElementById('accProg');
   if(!ps.options.length) PROGRESSIONS.forEach((p,i)=>ps.add(new Option(p.name,i)));
   const pa=document.getElementById('accPattern'); if(!pa.options.length) PATTERNS.forEach((p,i)=>pa.add(new Option(p.name,i)));
-  resolveProg(); document.getElementById('accDesc').innerHTML=accState.pattern.desc; renderSheet();
+  resolveProg();
+  ps.value=accState.progIdx; pa.value=accState.patIdx;
+  document.getElementById('accBpm').value=accState.bpm; document.getElementById('bpmLabel').textContent=accState.bpm;
+  document.getElementById('accDesc').innerHTML=accState.pattern.desc; renderSheet();
   buildKeyboard('kbAcc',48,88); highlightKeys('kbAcc',[]); }
 function renderSheet(jm){ const sheet=document.getElementById('accSheet'); sheet.innerHTML='';
   accState.progResolved.forEach((ch,i)=>{ const d=document.createElement('div'); d.className='measure'; d.id='meas-'+i;
@@ -537,20 +575,24 @@ function renderSheet(jm){ const sheet=document.getElementById('accSheet'); sheet
       jt=j.judge==='good'?'✅ 정확':(j.judge==='off'?(j.delta<0?'⏪ 빨라요':'⏩ 늦어요'):'❌ 틀림'); }
     d.innerHTML=`<span class="mnum">${i+1}마디</span><div class="mchord">${ch.label}</div><div class="msub">${ch.iv.map(iv=>pcName(ch.root+iv)).join(" ")}</div><div class="judge">${jt}</div>`;
     sheet.appendChild(d); }); }
-function stopAcc(){ if(accState.ticker){clearInterval(accState.ticker);accState.ticker=null;} accState.run=null;
-  document.querySelectorAll('.measure').forEach(m=>m.classList.remove('now')); }
+function stopAcc(){ if(accState.ticker){clearInterval(accState.ticker);accState.ticker=null;}
+  (accState.timeouts||[]).forEach(id=>clearTimeout(id)); accState.timeouts=[];
+  (accState.sched||[]).forEach(o=>{ try{o.stop();}catch(e){} }); accState.sched=[];
+  accState.run=null; document.querySelectorAll('.measure').forEach(m=>m.classList.remove('now')); }
 function startAcc(mode){ stopAcc(); initAudio(); resumeAudio(); resolveProg();
+  accState.sched=[]; accState.timeouts=[];
   const bpm=accState.bpm,beatDur=60/bpm,measureDur=beatDur*4,prog=accState.progResolved,pat=accState.pattern;
   const loops=2,totalMeasures=prog.length*loops,now=audioCtx.currentTime,countIn=4,musicStart=now+.3+countIn*beatDur;
   accState.run={mode,beatDur,measureDur,musicStart,totalMeasures,prog,now};
   accState.scored={}; accState.stats={good:0,off:0,wrong:0};
   document.getElementById('accScore').style.display='none'; renderSheet();
   const totalBeats=countIn+4*totalMeasures;
-  for(let bt=0;bt<totalBeats;bt++) metroClick(now+.3+bt*beatDur,bt%4===0);
-  if(mode==='demo'){ for(let i=0;i<totalMeasures;i++){ const ch=prog[i%prog.length],bass=48+ch.root,rh=chordToMidi(ch.root,ch.iv,60).slice(0,4);
+  for(let bt=0;bt<totalBeats;bt++) schedClick(now+.3+bt*beatDur,bt%4===0);
+  if(mode==='demo'){ for(let i=0;i<totalMeasures;i++){ const ch=prog[i%prog.length];
+    const bass=(ch.bass!=null?48+ch.bass:48+ch.root), rh=chordToMidi(ch.root,ch.iv,60).slice(0,4);
     pat.gen(bass,rh,ch.root,ch.iv).forEach(ev=>{ const atAbs=musicStart+i*measureDur+ev.b*beatDur;
-      ev.notes.forEach(n=>playNote(n,ev.dur*beatDur,.8,Math.max(0,atAbs-audioCtx.currentTime)));
-      const ms=(atAbs-now)*1000; setTimeout(()=>{ if(accState.run){ highlightKeys('kbAcc',ev.notes,accHandColor(ev.notes,bass)); document.getElementById('accNotes').textContent=ev.notes.map(midiName).join("  "); } },ms); }); } }
+      ev.notes.forEach(n=>schedTone(n,ev.dur*beatDur,.8,atAbs));
+      const ms=(atAbs-now)*1000; accState.timeouts.push(setTimeout(()=>{ if(accState.run){ highlightKeys('kbAcc',ev.notes,accHandColor(ev.notes,bass)); document.getElementById('accNotes').textContent=ev.notes.map(midiName).join("  "); } },ms)); }); } }
   document.getElementById('accFb').textContent= mode==='demo'?'🔊 데모 재생 중 — 손과 박자를 익히세요':'카운트인 후, 각 마디 첫 박에 코드를 누르세요!';
   document.getElementById('accFb').className='feedback';
   accState.ticker=setInterval(()=>{ const r=accState.run; if(!r)return; const t=audioCtx.currentTime,elapsed=t-r.musicStart;
@@ -616,7 +658,7 @@ function renderHands(){
   </div>
 
   <div class="card">
-    <h3>3. 합치기 — 4가지 반주 패턴</h3>
+    <h3>3. 합치기 — 7가지 반주 패턴</h3>
     <p>왼손과 오른손을 어떤 '리듬'으로 번갈아 칠지가 핵심이에요. 버튼을 눌러 소리로 들어보세요! (모두 C코드 기준)</p>
 
     <div class="diagram-label">① 블록 코드 — 양손 동시에 '쿵·쿵·쿵·쿵' (4박 모두)</div>
@@ -634,6 +676,34 @@ function renderHands(){
     <div class="diagram-label" style="margin-top:14px">④ 알베르티 베이스 — 클래식 왼손</div>
     <p>왼손이 낮은음–높은음–가운데음을 굴려요(반짝반짝 작은별 왼손). 오른손은 멜로디/코드.</p>
     <button class="btn mint" onclick="playPatternOnce('alberti')">🔊 알베르티 듣기</button>
+
+    <div class="diagram-label" style="margin-top:14px">⑤ 팝 8비트 — 통통 튀는 신나는 곡</div>
+    <p>왼손 근음 '쿵', 오른손 코드를 엇박에 '챡'. 신나는 팝.</p>
+    <button class="btn mint" onclick="playPatternOnce('pop8')">🔊 팝 8비트 듣기</button>
+
+    <div class="diagram-label" style="margin-top:14px">⑥ 느린 롤 — 아주 느린 발라드 (Perfect 느낌)</div>
+    <p>왼손 근음을 길게 깔고, 오른손 코드음을 한 박씩 천천히 쌓아요.</p>
+    <button class="btn mint" onclick="playPatternOnce('roll')">🔊 느린 롤 듣기</button>
+
+    <div class="diagram-label" style="margin-top:14px">⑦ 행진·락 — 힘찬 곡</div>
+    <p>왼손 근음 옥타브 '둥둥둥둥', 오른손 코드를 1·3박에 강하게.</p>
+    <button class="btn mint" onclick="playPatternOnce('march')">🔊 행진·락 듣기</button>
+  </div>
+
+  <div class="card">
+    <h3>🧩 코드는 왜 이렇게 생겼을까? (외우지 마세요!)</h3>
+    <p>코드는 근음 위에 <b>'3도씩 쌓는'</b> 규칙으로 만들어져요. 음 사이 간격(반음 수)만 알면 12키 전부에 똑같이 적용되니까, <b>12개를 외우는 게 아니라 공식 하나</b>를 익히는 거예요.</p>
+    <table>
+      <tr><th>종류</th><th>쌓는 법 (반음)</th><th>느낌 / 언제</th></tr>
+      <tr><td><b>메이저</b></td><td>0 – 4 – 7 (장3도+단3도)</td><td>밝고 안정적. 기본</td></tr>
+      <tr><td><b>마이너</b></td><td>0 – 3 – 7 (단3도+장3도)</td><td>어둡고 슬픔. 3도만 반음 ↓</td></tr>
+      <tr><td><b>디미니쉬</b></td><td>0 – 3 – 6 (단3도+단3도)</td><td>불안·긴장. 다음 코드로 빨리 가고 싶은 느낌</td></tr>
+      <tr><td><b>오그먼트</b></td><td>0 – 4 – 8 (장3도+장3도)</td><td>붕 뜬 몽환·신비. 잠깐 스치는 양념</td></tr>
+      <tr><td><b>서스4 / 서스2</b></td><td>0 – 5 – 7 / 0 – 2 – 7</td><td>3도를 뺀 '열린' 소리. 해결되기 직전 긴장</td></tr>
+      <tr><td><b>7th</b></td><td>3화음 + 7도(10 또는 11)</td><td>색깔↑. 재즈·발라드 단골</td></tr>
+    </table>
+    <p style="margin-top:10px"><b>왜 '저렇게' 쳐야 할까?</b> — 정답 운지는 그냥 규칙이 아니라 <b>손이 가장 편하고 다음 코드로 빨리 옮기기 좋은 모양</b>이라서예요. 그래서 처음엔 손가락 번호를 따라 익히되, 익숙해지면 자기 손에 맞게 바꿔도 돼요.</p>
+    <p><b>디미니쉬·오그먼트는 꼭 외워야 하나요?</b> — 아니에요. 실제 곡에서는 메이저·마이너·7th가 90%예요. 디미니쉬/오그먼트는 '두 코드 사이를 잠깐 잇는 다리'로 가끔 나와요. 원리만 이해하고, 나올 때 '코드 사전' 탭에서 모양을 확인하는 걸로 충분해요.</p>
   </div>
 
   <div class="card">
@@ -654,6 +724,7 @@ function renderHands(){
 const built={};
 function ensureLive(){ if(built.live)return; buildKeyboard('kbLive',48,84); enableInput('kbLive'); built.live=true; }
 document.querySelectorAll('.tab').forEach(t=>{ t.onclick=()=>{ initAudio(); resumeAudio();
+  stopAcc(); allNotesOff();
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
   t.classList.add('active'); currentView=t.dataset.view;
@@ -661,7 +732,7 @@ document.querySelectorAll('.tab').forEach(t=>{ t.onclick=()=>{ initAudio(); resu
   if(currentView==='live'){ ensureLive(); refreshLive([...activeNotes]); }
   if(currentView==='guided'){ fillGSet(); buildKeyboard('kbGuided',48,84); enableInput('kbGuided'); renderGuided([...activeNotes]); }
   if(currentView==='dict'){ initDict(); renderDict(); }
-  if(currentView==='accomp'){ stopAcc(); buildAccUI(); enableInput('kbAcc'); }
+  if(currentView==='accomp'){ stopAcc(); if(!accState._init){ applyProgRec(); accState._init=true; } buildAccUI(); enableInput('kbAcc'); }
   if(currentView==='hands'){ renderHands(); }
 }; });
 
@@ -673,7 +744,7 @@ document.getElementById('gSet').onchange=e=>{ gKey=e.target.value; gIdx=0; gSolv
 document.getElementById('gPrev').onclick=()=>nextGuided(-1);
 document.getElementById('gNext').onclick=()=>nextGuided(1);
 document.getElementById('gToggle').onclick=e=>{ gShow=!gShow; e.target.textContent=gShow?'🙈 건반 숨기기':'👀 건반 보기'; renderGuided([...activeNotes]); };
-document.getElementById('accProg').onchange=e=>{ accState.progIdx=+e.target.value; stopAcc(); buildAccUI(); };
+document.getElementById('accProg').onchange=e=>{ accState.progIdx=+e.target.value; applyProgRec(); stopAcc(); buildAccUI(); };
 document.getElementById('accPattern').onchange=e=>{ accState.patIdx=+e.target.value; stopAcc(); buildAccUI(); };
 document.getElementById('accBpm').oninput=e=>{ accState.bpm=+e.target.value; document.getElementById('bpmLabel').textContent=e.target.value; };
 document.getElementById('accDemo').onclick=()=>startAcc('demo');
