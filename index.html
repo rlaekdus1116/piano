@@ -126,6 +126,7 @@
   <div class="midi-status"><span class="dot" id="dot"></span><span id="midiText">CP88 연결 안 됨</span></div>
   <button class="btn" id="connectBtn">CP88 연결</button>
   <button class="btn ghost" id="soundBtn">🔊 소리 켜짐</button>
+  <button class="btn ghost" id="panicBtn">🔇 음 끄기</button>
   <span class="stat" id="deviceName"></span>
 </header>
 
@@ -193,7 +194,7 @@
       <button class="btn ghost" id="accStop">■ 정지</button>
     </div>
     <div class="help" id="accDesc"></div>
-    <div class="card" style="overflow-x:auto"><div class="diagram-label">🎼 반주 악보 — 파랑●=오른손 / 주황●=왼손, 가로는 박자</div><div id="accStaff"></div></div>
+    <div class="card" style="overflow-x:auto"><div class="diagram-label">🎼 반주 악보 — 위 오선=오른손, 아래 오선=왼손 · 가로축은 박자(1·2·3·4)</div><div id="accStaff"></div></div>
     <div id="accSheet" class="sheet"></div>
     <div class="feedback" id="accFb" style="min-height:28px"></div>
     <div class="kb-wrap"><div id="kbAcc"></div></div>
@@ -373,15 +374,21 @@ function afterInput(cmd){
   else if(currentView==='accomp'){ refreshAcc(notes); if(cmd===0x90) accOnset(); }
 }
 function allNotesOff(){ Object.keys(liveVoices).forEach(m=>noteOff(+m)); activeNotes.clear(); }
-/* 화면 건반은 '토글' 방식: 누르면 켜지고, 같은 건반을 다시 누르면 꺼져요(터치 안정성↑).
-   진짜 CP88(MIDI)은 그대로 누르는 동안만 소리 납니다. */
-function toggleNote(m){ if(activeNotes.has(m)) inputOff(m); else inputOn(m,.8); }
+/* 화면 건반: 손가락으로 누르는 동안 소리(멀티터치 코드 OK). 떼면 꺼집니다.
+   잘못 눌렀으면 손가락을 떼면 바로 취소돼요. 안 꺼지면 헤더의 '🔇 음 끄기'. */
 function enableInput(id){
   const el=document.getElementById(id); if(!el||el._wired)return; el._wired=true; el.style.touchAction='none';
-  el.addEventListener('mousedown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault(); toggleNote(+k.dataset.m); });
+  let mouseNote=null;
+  el.addEventListener('mousedown',e=>{ const k=e.target.closest('[data-m]'); if(!k)return; e.preventDefault(); mouseNote=+k.dataset.m; inputOn(mouseNote,.8); });
+  window.addEventListener('mouseup',()=>{ if(mouseNote!=null){ inputOff(mouseNote); mouseNote=null; } });
+  const tmap=new Map();
   el.addEventListener('touchstart',e=>{ e.preventDefault();
     for(const t of e.changedTouches){ const tgt=document.elementFromPoint(t.clientX,t.clientY);
-      const k=tgt&&tgt.closest&&tgt.closest('[data-m]'); if(!k)continue; toggleNote(+k.dataset.m); } },{passive:false});
+      const k=tgt&&tgt.closest&&tgt.closest('[data-m]'); if(!k)continue; if(tmap.has(t.identifier))continue;
+      const mm=+k.dataset.m; tmap.set(t.identifier,mm); inputOn(mm,.8); } },{passive:false});
+  const endT=e=>{ if(e.cancelable)e.preventDefault(); for(const t of e.changedTouches){ if(tmap.has(t.identifier)){ inputOff(tmap.get(t.identifier)); tmap.delete(t.identifier); } } };
+  el.addEventListener('touchend',endT,{passive:false});
+  el.addEventListener('touchcancel',endT,{passive:false});
 }
 
 /* ============ Web MIDI ============ */
@@ -427,12 +434,11 @@ let gKey='basic', gIdx=0, gShow=true, gSolved=false;
 function fillGSet(){ const s=document.getElementById('gSet'); if(s.options.length)return;
   Object.entries(GUIDED_SETS).forEach(([k,v])=>s.add(new Option(v.name,k))); }
 function curGuided(){ const [root,sym]=GUIDED_SETS[gKey].list[gIdx]; return {root,sym,iv:ivOf(sym),label:pcName(root)+sym}; }
-function renderGuided(notes){
+function guidedBuild(){
   const c=curGuided(), {bass,rh}=voicing(c.root,c.iv), fingers=rhFingers(rh.length);
   document.getElementById('gName').textContent=c.label;
   document.getElementById('gNotes').innerHTML="구성음: <b>"+c.iv.map(i=>pcName(c.root+i)+"("+pcSol(c.root+i)+")").join(" · ")+"</b>";
   document.getElementById('gProgress').textContent=(gIdx+1)+" / "+GUIDED_SETS[gKey].list.length;
-  // 손 가이드
   document.getElementById('gHands').innerHTML=`
     <div class="hand l"><h4><span class="swatch"></span>왼손 (주황)</h4>
       <p>새끼손가락(5)으로 근음 <b>${pcName(c.root)}(${pcSol(c.root)})</b> 하나만!</p>
@@ -440,31 +446,32 @@ function renderGuided(notes){
     <div class="hand r"><h4><span class="swatch"></span>오른손 (파랑)</h4>
       <p>${rh.map((m,i)=>FN[fingers[i]]+"("+fingers[i]+")→"+pcName(m%12)).join(", ")}</p>
       <p class="finger-row">${HAND_GUIDE[c.sym]?.fr||""}</p></div>`;
-  // 건반
-  buildKeyboard('kbGuided',48,84);
+  buildKeyboard('kbGuided',48,84);   // 코드 바뀔 때만 새로 그림
+  if(gShow){ const fmap={}; fmap[bass]='5'; rh.forEach((m,i)=>fmap[m]=String(fingers[i])); addFingers('kbGuided',fmap); }
+  guidedColor([...activeNotes]);
+}
+function guidedColor(notes){   // 입력 때마다 색만 바꿈 (건반 새로 안 그림 → 터치 끊김 방지)
+  const c=curGuided(), {bass,rh}=voicing(c.root,c.iv);
   const played=new Set(notes.map(n=>((n%12)+12)%12));
   const wantPC=new Set(c.iv.map(i=>((c.root+i)%12+12)%12));
+  const cmap={};
   if(gShow){
-    const cmap={}, fmap={};
-    cmap[bass]= played.has(((bass%12)+12)%12)?'#3fcf99':'#ff9e7a'; fmap[bass]='5';
-    rh.forEach((m,i)=>{ cmap[m]= played.has(((m%12)+12)%12)?'#3fcf99':'#7cc4ff'; fmap[m]=String(fingers[i]); });
-    // 틀린 음 빨강
+    cmap[bass]= played.has(((bass%12)+12)%12)?'#3fcf99':'#ff9e7a';
+    rh.forEach(m=>{ cmap[m]= played.has(((m%12)+12)%12)?'#3fcf99':'#7cc4ff'; });
     notes.forEach(m=>{ if(!wantPC.has(((m%12)+12)%12)) cmap[m]='#ff6b8a'; });
-    highlightKeys('kbGuided',[...new Set([bass,...rh,...notes])],cmap);
-    addFingers('kbGuided',fmap);
   } else {
-    const cmap={}; notes.forEach(m=>cmap[m]= wantPC.has(((m%12)+12)%12)?'#3fcf99':'#ff6b8a');
-    highlightKeys('kbGuided',notes,cmap);
+    notes.forEach(m=>cmap[m]= wantPC.has(((m%12)+12)%12)?'#3fcf99':'#ff6b8a');
   }
+  highlightKeys('kbGuided',Object.keys(cmap).map(Number),cmap);
 }
 function checkGuided(notes){
-  renderGuided(notes);
+  guidedColor(notes);
   if(gSolved) return;
   const c=curGuided();
   const played=new Set(notes.map(n=>((n%12)+12)%12));
   const want=new Set(c.iv.map(i=>((c.root+i)%12+12)%12));
   const fb=document.getElementById('gFb');
-  if(notes.length<c.iv.length){ return; }
+  if(notes.length<c.iv.length) return;
   const correct=want.size===played.size&&[...want].every(x=>played.has(x));
   if(correct){ gSolved=true; fb.textContent="🎉 참 잘했어요! 딩동댕~"; fb.className="feedback ok"; playChordNow(chordToMidi(c.root,c.iv,60),.9,.7);
     setTimeout(()=>nextGuided(1),1300); }
@@ -472,7 +479,7 @@ function checkGuided(notes){
 }
 function nextGuided(dir){ allNotesOff(); const n=GUIDED_SETS[gKey].list.length; gIdx=(gIdx+dir+n)%n; gSolved=false;
   document.getElementById('gFb').textContent="🎀 이 코드를 눌러보세요!"; document.getElementById('gFb').className="feedback";
-  renderGuided([...activeNotes]); }
+  guidedBuild(); }
 
 /* ============ DICTIONARY ============ */
 let dictRoot=0, dictType="", dictMidi=[];
@@ -565,30 +572,52 @@ function buildAccUI(){ const ps=document.getElementById('accProg');
 const DIA_MAP={0:[0,''],1:[0,'♯'],2:[1,''],3:[2,'♭'],4:[2,''],5:[3,''],6:[3,'♯'],7:[4,''],8:[5,'♭'],9:[5,''],10:[6,'♭'],11:[6,'']};
 function renderAccNotation(){
   const cont=document.getElementById('accStaff'); if(!cont)return; resolveProg();
-  const prog=accState.progResolved, pat=accState.pattern, mW=176, lx=52, n=prog.length, W=lx+n*mW+10, H=192;
-  const tB=72, bB=160, gap=9, half=4.5;
+  const prog=accState.progResolved, pat=accState.pattern, mW=178, lx=70, n=prog.length, W=lx+n*mW+12, H=200;
+  const tB=74, bB=164, gap=9, half=4.5, INK='#111', GRID='#d8d8d8';
   function di(m){ const pc=((m%12)+12)%12, oct=Math.floor(m/12)-1, d=DIA_MAP[pc]; return {dia:oct*7+d[0],acc:d[1]}; }
   function yPos(m){ const o=di(m); return m>=60?{y:tB-(o.dia-30)*half,acc:o.acc,t:1}:{y:bB-(o.dia-18)*half,acc:o.acc,t:0}; }
-  let s=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
-  for(let i=0;i<5;i++){ const y=tB-i*gap; s+=`<line x1="${lx}" y1="${y}" x2="${W-6}" y2="${y}" stroke="#e7b8d2" stroke-width="1"/>`; }
-  for(let i=0;i<5;i++){ const y=bB-i*gap; s+=`<line x1="${lx}" y1="${y}" x2="${W-6}" y2="${y}" stroke="#bcd6f0" stroke-width="1"/>`; }
-  s+=`<text x="6" y="${tB-15}" font-size="12" fill="#3d8fd6" font-weight="700">오른손</text>`;
-  s+=`<text x="6" y="${bB-15}" font-size="12" fill="#e06a3e" font-weight="700">왼손</text>`;
+  let s=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="background:#fff;border-radius:8px">`;
+  // 오선 (검정)
+  for(let i=0;i<5;i++){ const y=tB-i*gap; s+=`<line x1="${lx}" y1="${y}" x2="${W-8}" y2="${y}" stroke="${INK}" stroke-width="1"/>`; }
+  for(let i=0;i<5;i++){ const y=bB-i*gap; s+=`<line x1="${lx}" y1="${y}" x2="${W-8}" y2="${y}" stroke="${INK}" stroke-width="1"/>`; }
+  // 왼쪽 세로선 + 음자리/박자
+  s+=`<line x1="${lx}" y1="${tB-4*gap}" x2="${lx}" y2="${tB}" stroke="${INK}" stroke-width="2"/>`;
+  s+=`<line x1="${lx}" y1="${bB-4*gap}" x2="${lx}" y2="${bB}" stroke="${INK}" stroke-width="2"/>`;
+  s+=`<text x="8" y="${tB-13}" font-size="11" fill="${INK}" font-weight="700">오른손</text>`;
+  s+=`<text x="8" y="${bB-13}" font-size="11" fill="${INK}" font-weight="700">왼손</text>`;
+  s+=`<text x="${lx+6}" y="${tB-10}" font-size="15" font-weight="800" fill="${INK}">4/4</text>`;
+  function ledger(x,y,clefTop,clefBottom){ // 오선 밖 음표용 보조선
+    let out=''; const step=half*2;
+    if(y>clefBottom){ for(let yy=clefBottom+step; yy<=y+1; yy+=step) out+=`<line x1="${x-9}" y1="${yy}" x2="${x+9}" y2="${yy}" stroke="${INK}" stroke-width="1"/>`; }
+    if(y<clefTop){ for(let yy=clefTop-step; yy>=y-1; yy-=step) out+=`<line x1="${x-9}" y1="${yy}" x2="${x+9}" y2="${yy}" stroke="${INK}" stroke-width="1"/>`; }
+    return out;
+  }
   prog.forEach((ch,mi)=>{ const x0=lx+mi*mW;
-    s+=`<line x1="${x0}" y1="${tB-4*gap}" x2="${x0}" y2="${bB}" stroke="#cbb0c2" stroke-width="1.5"/>`;
-    s+=`<text x="${x0+mW/2}" y="14" text-anchor="middle" font-size="16" font-weight="800" fill="#ff6fae">${ch.label}</text>`;
-    for(let bt=0;bt<4;bt++){ const bx=x0+16+(bt/4)*(mW-26);
-      s+=`<line x1="${bx}" y1="${tB-4*gap}" x2="${bx}" y2="${tB}" stroke="#f3dceb" stroke-width="1"/>`;
-      s+=`<line x1="${bx}" y1="${bB-4*gap}" x2="${bx}" y2="${bB}" stroke="#e3eefb" stroke-width="1"/>`;
-      s+=`<text x="${bx}" y="${H-4}" text-anchor="middle" font-size="9" fill="#c99bb7">${bt+1}</text>`; }
+    s+=`<text x="${x0+mW/2}" y="14" text-anchor="middle" font-size="16" font-weight="800" fill="${INK}">${ch.label}</text>`;
+    for(let bt=0;bt<4;bt++){ const bx=x0+18+(bt/4)*(mW-28);
+      s+=`<line x1="${bx}" y1="${tB-4*gap}" x2="${bx}" y2="${tB}" stroke="${GRID}" stroke-width="1"/>`;
+      s+=`<line x1="${bx}" y1="${bB-4*gap}" x2="${bx}" y2="${bB}" stroke="${GRID}" stroke-width="1"/>`;
+      s+=`<text x="${bx}" y="${H-5}" text-anchor="middle" font-size="9" fill="#999">${bt+1}</text>`; }
     const bass=(ch.bass!=null?48+ch.bass:48+ch.root), rh=chordToMidi(ch.root,ch.iv,60).slice(0,4);
-    pat.gen(bass,rh,ch.root,ch.iv).forEach(ev=>{ const bx=x0+16+(ev.b/4)*(mW-26);
-      ev.notes.forEach(nn=>{ const p=yPos(nn), col=p.t?'#5b9be0':'#e8814f';
-        s+=`<ellipse cx="${bx}" cy="${p.y}" rx="5.4" ry="4.1" fill="${col}" stroke="#7a5066" stroke-width="0.6"/>`;
-        if(p.acc) s+=`<text x="${bx-10}" y="${p.y+4}" font-size="11" fill="#7a5066">${p.acc}</text>`; }); });
+    pat.gen(bass,rh,ch.root,ch.iv).forEach(ev=>{ const bx=x0+18+(ev.b/4)*(mW-28);
+      const tre=[], bas=[];
+      ev.notes.forEach(nn=>{ const p=yPos(nn); (p.t?tre:bas).push(p); });
+      [[tre,1],[bas,0]].forEach(([grp,isT])=>{ if(!grp.length)return;
+        grp.sort((a,b)=>a.y-b.y);
+        const topY=grp[0].y, botY=grp[grp.length-1].y;
+        // 기둥(stem)
+        if(isT) s+=`<line x1="${bx+5.1}" y1="${botY}" x2="${bx+5.1}" y2="${topY-21}" stroke="${INK}" stroke-width="1.4"/>`;
+        else    s+=`<line x1="${bx-5.1}" y1="${topY}" x2="${bx-5.1}" y2="${botY+21}" stroke="${INK}" stroke-width="1.4"/>`;
+        grp.forEach(p=>{
+          s+=ledger(bx,p.y, isT?(tB-4*gap):(bB-4*gap), isT?tB:bB);
+          s+=`<ellipse cx="${bx}" cy="${p.y}" rx="5.6" ry="4.2" fill="${INK}" transform="rotate(-18 ${bx} ${p.y})"/>`;
+          if(p.acc) s+=`<text x="${bx-11}" y="${p.y+4}" font-size="12" fill="${INK}">${p.acc}</text>`;
+        });
+      });
+    });
+    s+=`<line x1="${x0+mW}" y1="${tB-4*gap}" x2="${x0+mW}" y2="${tB}" stroke="${INK}" stroke-width="1"/>`;
+    s+=`<line x1="${x0+mW}" y1="${bB-4*gap}" x2="${x0+mW}" y2="${bB}" stroke="${INK}" stroke-width="1"/>`;
   });
-  s+=`<line x1="${W-6}" y1="${tB-4*gap}" x2="${W-6}" y2="${tB}" stroke="#cbb0c2" stroke-width="2"/>`;
-  s+=`<line x1="${W-6}" y1="${bB-4*gap}" x2="${W-6}" y2="${bB}" stroke="#cbb0c2" stroke-width="2"/>`;
   s+=`</svg>`; cont.innerHTML=s;
 }
 function renderSheet(jm){ const sheet=document.getElementById('accSheet'); sheet.innerHTML='';
@@ -753,7 +782,7 @@ document.querySelectorAll('.tab').forEach(t=>{ t.onclick=()=>{ initAudio(); resu
   t.classList.add('active'); currentView=t.dataset.view;
   document.getElementById('view-'+currentView).classList.add('active');
   if(currentView==='live'){ ensureLive(); refreshLive([...activeNotes]); }
-  if(currentView==='guided'){ fillGSet(); buildKeyboard('kbGuided',48,84); enableInput('kbGuided'); renderGuided([...activeNotes]); }
+  if(currentView==='guided'){ fillGSet(); buildKeyboard('kbGuided',48,84); enableInput('kbGuided'); guidedBuild(); }
   if(currentView==='dict'){ initDict(); renderDict(); }
   if(currentView==='accomp'){ stopAcc(); if(!accState._init){ applyProgRec(); accState._init=true; } buildAccUI(); enableInput('kbAcc'); }
   if(currentView==='hands'){ renderHands(); }
@@ -761,12 +790,13 @@ document.querySelectorAll('.tab').forEach(t=>{ t.onclick=()=>{ initAudio(); resu
 
 /* ============ init ============ */
 document.getElementById('connectBtn').onclick=connectMIDI;
-document.getElementById('soundBtn').onclick=()=>{ soundOn=!soundOn; document.getElementById('soundBtn').textContent=soundOn?'🔊 소리 켜짐':'🔇 소리 꺼짐'; if(soundOn)initAudio(); };
+document.getElementById('soundBtn').onclick=()=>{ soundOn=!soundOn; document.getElementById('soundBtn').textContent=soundOn?'🔊 소리 켜짐':'🔇 소리 꺼짐'; if(soundOn)initAudio(); else allNotesOff(); };
+document.getElementById('panicBtn').onclick=()=>{ allNotesOff(); if(currentView==='live')refreshLive([]); else if(currentView==='guided')guidedColor([]); else if(currentView==='accomp')refreshAcc([]); };
 document.getElementById('dictPlay').onclick=()=>{ if(dictMidi.length) playChordNow(dictMidi,1.1,.8); };
 document.getElementById('gSet').onchange=e=>{ gKey=e.target.value; gIdx=0; gSolved=false; nextGuided(0); };
 document.getElementById('gPrev').onclick=()=>nextGuided(-1);
 document.getElementById('gNext').onclick=()=>nextGuided(1);
-document.getElementById('gToggle').onclick=e=>{ gShow=!gShow; e.target.textContent=gShow?'🙈 건반 숨기기':'👀 건반 보기'; renderGuided([...activeNotes]); };
+document.getElementById('gToggle').onclick=e=>{ gShow=!gShow; e.target.textContent=gShow?'🙈 건반 숨기기':'👀 건반 보기'; guidedBuild(); };
 document.getElementById('accProg').onchange=e=>{ accState.progIdx=+e.target.value; applyProgRec(); stopAcc(); buildAccUI(); };
 document.getElementById('accPattern').onchange=e=>{ accState.patIdx=+e.target.value; stopAcc(); buildAccUI(); };
 document.getElementById('accBpm').oninput=e=>{ accState.bpm=+e.target.value; document.getElementById('bpmLabel').textContent=e.target.value; };
